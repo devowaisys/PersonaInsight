@@ -11,11 +11,11 @@ from werkzeug.exceptions import BadRequest, InternalServerError, Conflict, Unaut
 from flask_jwt_extended import (
     JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
 )
-from OCEANAnalyzer import OceanAnalyzer, download_nltk_resources
-from TextPreProcessor import TextPreprocessor
-from TweetScraper import TwitterScraper
-from User import User
-from Analysis import Analysis
+from Core.OCEANAnalyzer import OceanAnalyzer, download_nltk_resources
+from Core.TextPreProcessor import TextPreprocessor
+from Core.TweetScraper import TwitterScraper
+from Operation.User import User
+from Operation.Analysis import Analysis
 
 
 class PersonaInsight:

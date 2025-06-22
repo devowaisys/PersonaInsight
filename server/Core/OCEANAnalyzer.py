@@ -26,8 +26,8 @@ class OceanAnalyzer:
         self.max_length = max_length
         self.model = None
         self.tokenizer = preprocessing.text.Tokenizer()
-        self.model_file = 'ocean_model.keras'  # Changed to .keras extension
-        self.tokenizer_file = 'ocean_tokenizer.pkl'
+        self.model_file = '../ocean_model.keras'  # Changed to .keras extension
+        self.tokenizer_file = '../ocean_tokenizer.pkl'
         self.interpreter = PersonalityInterpreter()
 
     def save_model(self):
