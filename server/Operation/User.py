@@ -1,4 +1,6 @@
 import re
+import hashlib
+import secrets
 import pyodbc
 from typing import Union, Optional, Dict, Any
 
@@ -15,7 +17,49 @@ class User:
         self.db_username = None
         self.db_password = None
         self.trusted_connection = None
-        self.connection = None  # Store the connection as an instance variable
+        self.connection = None
+
+    def _hash_password(self, password: str) -> str:
+        """
+        Hash a password using SHA-256 with a random salt.
+
+        Args:
+            password: Plain text password
+
+        Returns:
+            Hashed password in format: salt$hash
+        """
+        # Generate a random salt
+        salt = secrets.token_hex(16)
+        # Create hash
+        pwd_hash = hashlib.sha256((salt + password).encode()).hexdigest()
+        return f"{salt}${pwd_hash}"
+
+    def _verify_password(self, password: str, hashed_password: str) -> bool:
+        """
+        Verify a password against its hash.
+
+        Args:
+            password: Plain text password to verify
+            hashed_password: Stored hash in format: salt$hash
+
+        Returns:
+            True if password matches, False otherwise
+        """
+        try:
+            # Handle both old plain text passwords and new hashed passwords
+            if '$' not in hashed_password:
+                # Old plain text password - direct comparison
+                return password == hashed_password.strip()
+
+            # New hashed password
+            salt, stored_hash = hashed_password.split('$', 1)
+            # Hash the input password with the same salt
+            pwd_hash = hashlib.sha256((salt + password).encode()).hexdigest()
+            return pwd_hash == stored_hash
+        except ValueError:
+            # If splitting fails, treat as plain text
+            return password == hashed_password.strip()
 
     def get_connection(self,
                        server: Optional[str] = None,
@@ -25,20 +69,6 @@ class User:
                        trusted_connection: Optional[bool] = None) -> Union[pyodbc.Connection, None]:
         """
         Establish a connection to the database.
-
-        Args:
-            server: Database server name
-            database: Database name
-            db_username: Database username (for SQL Authentication)
-            db_password: Database password (for SQL Authentication)
-            trusted_connection: Whether to use Windows Authentication
-
-        Returns:
-            Connection object or None if connection failed
-
-        Raises:
-            ValueError: If required parameters are missing
-            ConnectionError: If database connection fails
         """
         self.server = server or self.server
         self.database = database or self.database
@@ -46,26 +76,18 @@ class User:
         self.db_password = db_password or self.db_password
         self.trusted_connection = trusted_connection if trusted_connection is not None else self.trusted_connection
 
-        # Check if we have the minimum required parameters
         if not self.server or not self.database:
             raise ValueError("Server and database name are required")
 
         try:
-            # Build connection string
             if self.trusted_connection:
-                # Windows Authentication
                 conn_str = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={self.server};DATABASE={self.database};Trusted_Connection=yes;'
             else:
-                # SQL Server Authentication - check if credentials are provided
                 if not self.db_username or not self.db_password:
                     raise ValueError("Username and password are required for SQL Server Authentication")
-
                 conn_str = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={self.server};DATABASE={self.database};UID={self.db_username};PWD={self.db_password}'
 
-            # Close existing connection if one exists
             self.close_connection()
-
-            # Create new connection
             self.connection = pyodbc.connect(conn_str)
             return self.connection
 
@@ -113,10 +135,18 @@ class User:
         try:
             cursor = self.connection.cursor()
 
+            # Debug logging
+            print(f"Checking if email exists: {self.email}")
+
             # Check if email already exists
             cursor.execute("SELECT ID FROM Users WHERE Email = ?", (self.email,))
-            if cursor.fetchone():
+            existing_user = cursor.fetchone()
+
+            if existing_user:
+                print(f"Email already exists for user ID: {existing_user[0]}")
                 raise ValueError("Email already exists")
+
+            print("Email is unique, proceeding with user creation...")
 
             # Insert new user
             insert_query = "INSERT INTO Users (FullName, Email, Password) VALUES (?, ?, ?)"
@@ -127,18 +157,23 @@ class User:
             cursor.execute("SELECT @@IDENTITY")
             user_id = int(cursor.fetchone()[0])
 
+            print(f"User created successfully with ID: {user_id}")
             return user_id
 
         except pyodbc.Error as e:
+            print(f"Database error in add_user: {str(e)}")
             self.connection.rollback()
             raise pyodbc.Error(f"Database error while adding user: {str(e)}")
         except Exception as e:
+            print(f"Unexpected error in add_user: {str(e)}")
             if self.connection:
                 self.connection.rollback()
             raise Exception(f"Error adding user: {str(e)}")
 
     def get_user(self, email: str, password: str) -> Union[Dict[str, Any], str]:
-
+        """
+        Authenticate user and return user data.
+        """
         if not email or not password:
             raise ValueError("Email and password are required")
 
@@ -156,15 +191,16 @@ class User:
             if not user:
                 return "User not found"
 
-            # Verify password
+            # Get the stored password (could be plain text or hashed)
             stored_password = str(user[3]).strip()
-            if stored_password == password:
-                # Convert row to dictionary with whitespace stripped from string fields
+
+            # Verify password using the new method
+            if self._verify_password(password, stored_password):
+                # Convert row to dictionary
                 columns = [column[0] for column in cursor.description]
                 user_dict = {}
 
                 for idx, (col_name, value) in enumerate(zip(columns, user)):
-                    # Strip whitespace if the value is a string
                     if isinstance(value, str):
                         user_dict[col_name] = value.strip()
                     else:
@@ -179,46 +215,11 @@ class User:
         except Exception as e:
             raise Exception(f"Error retrieving user: {str(e)}")
 
-    def get_user_by_id(self, user_id: int) -> Union[Dict[str, Any], str]:
-
-        if not user_id:
-            raise ValueError("User ID is required")
-
-        if not self.connection:
-            self.connection = self.get_connection()
-            if not self.connection:
-                raise ConnectionError("No active connection and unable to establish one")
-
-        try:
-            cursor = self.connection.cursor()
-            query = "SELECT * FROM Users WHERE ID = ?"
-            cursor.execute(query, user_id)
-            user = cursor.fetchone()
-
-            if not user:
-                return "User not found"
-
-            # Convert row to dictionary with whitespace stripped from string fields
-            columns = [column[0] for column in cursor.description]
-            user_dict = {}
-
-            for idx, (col_name, value) in enumerate(zip(columns, user)):
-                # Strip whitespace if the value is a string
-                if isinstance(value, str):
-                    user_dict[col_name] = value.strip()
-                else:
-                    user_dict[col_name] = value
-
-            return user_dict
-
-        except pyodbc.Error as e:
-            raise pyodbc.Error(f"Database error while retrieving user: {str(e)}")
-        except Exception as e:
-            raise Exception(f"Error retrieving user: {str(e)}")
-
     def update_user(self, user_id: int, full_name: str, email: str, curr_password: str,
                     new_password: Optional[str] = None) -> str:
-
+        """
+        Update user information.
+        """
         if not all([user_id, full_name, email, curr_password]):
             raise ValueError("User ID, full name, email, and current password are required")
 
@@ -228,7 +229,6 @@ class User:
                 raise ConnectionError("No active connection and unable to establish one")
 
         try:
-            # First verify the user exists and password is correct
             cursor = self.connection.cursor()
             query = "SELECT * FROM Users WHERE ID = ?"
             cursor.execute(query, user_id)
@@ -237,20 +237,23 @@ class User:
             if not user:
                 return "User not found"
 
-            # Verify current password
+            # Verify current password using the new method
             stored_password = str(user[3]).strip()
-            if stored_password != curr_password:
+            if not self._verify_password(curr_password, stored_password):
                 return "Invalid password"
 
             # Check if the email belongs to this user
             if user[2].strip().lower() != email.lower():
-                # Verify if the new email is already taken by another user
                 cursor.execute("SELECT ID FROM Users WHERE Email = ? AND ID <> ?", (email, user_id))
                 if cursor.fetchone():
                     return "Email already exists for another user"
 
-            # Use the current password if no new password is provided
-            password_to_use = new_password if new_password else curr_password
+            # Prepare password for update
+            if new_password:
+                password_to_use = self._hash_password(new_password)
+            else:
+                # Keep the existing password
+                password_to_use = stored_password
 
             # Update user data
             update_query = "UPDATE Users SET FullName = ?, Email = ?, Password = ? WHERE ID = ?"
@@ -272,7 +275,9 @@ class User:
             raise Exception(f"Error updating user: {str(e)}")
 
     def delete_user(self, user_id: int, email: str, password: str) -> bool:
-
+        """
+        Delete a user account.
+        """
         if not all([user_id, email, password]):
             raise ValueError("User ID, email, and password are required")
 
@@ -282,20 +287,17 @@ class User:
                 raise ConnectionError("No active connection and unable to establish one")
 
         try:
-            # Check if the user exists and password matches
             cursor = self.connection.cursor()
-
-            # First verify the user ID matches the email
             cursor.execute("SELECT * FROM Users WHERE ID = ? AND Email = ?", (user_id, email))
             user = cursor.fetchone()
 
             if not user:
-                return False  # User not found or email doesn't match ID
+                return False
 
-            # Verify password
+            # Verify password using the new method
             stored_password = str(user[3]).strip()
-            if stored_password != password:
-                return False  # Password incorrect
+            if not self._verify_password(password, stored_password):
+                return False
 
             # Delete the user
             delete_query = "DELETE FROM Users WHERE ID = ?"
@@ -311,6 +313,43 @@ class User:
             if self.connection:
                 self.connection.rollback()
             raise Exception(f"Error deleting user: {str(e)}")
+
+    def get_user_by_id(self, user_id: int) -> Union[Dict[str, Any], str]:
+        """
+        Get user by ID.
+        """
+        if not user_id:
+            raise ValueError("User ID is required")
+
+        if not self.connection:
+            self.connection = self.get_connection()
+            if not self.connection:
+                raise ConnectionError("No active connection and unable to establish one")
+
+        try:
+            cursor = self.connection.cursor()
+            query = "SELECT * FROM Users WHERE ID = ?"
+            cursor.execute(query, user_id)
+            user = cursor.fetchone()
+
+            if not user:
+                return "User not found"
+
+            columns = [column[0] for column in cursor.description]
+            user_dict = {}
+
+            for idx, (col_name, value) in enumerate(zip(columns, user)):
+                if isinstance(value, str):
+                    user_dict[col_name] = value.strip()
+                else:
+                    user_dict[col_name] = value
+
+            return user_dict
+
+        except pyodbc.Error as e:
+            raise pyodbc.Error(f"Database error while retrieving user: {str(e)}")
+        except Exception as e:
+            raise Exception(f"Error retrieving user: {str(e)}")
 
     def __del__(self):
         """Destructor to ensure connection is closed"""

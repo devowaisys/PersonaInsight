@@ -6,8 +6,8 @@ from sklearn.model_selection import train_test_split
 from tensorflow.keras import layers, optimizers, preprocessing
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras import metrics
-from TextPreProcessor import TextPreprocessor
-from PersonalityInterpretor import PersonalityInterpreter
+from Core.TextPreProcessor import TextPreprocessor
+from Core.PersonalityInterpretor import PersonalityInterpreter
 
 
 def download_nltk_resources():
@@ -181,7 +181,7 @@ def main():
 
         if not model_loaded:
             print("OCEAN model not found. Training new model...")
-            ocean_df = ocean_analyzer.load_data(r'C:\Users\Owais\PycharmProjects\PersonaInsight-server\mypersonality_final.csv')
+            ocean_df = ocean_analyzer.load_data('mypersonality_final.csv')
             X_train, X_test, y_train, y_test = ocean_analyzer.prepare_data(ocean_df)
             ocean_analyzer.train(X_train, y_train, X_test, y_test)
         else:
